@@ -16,20 +16,22 @@ class LogEntry(_message.Message):
     def __init__(self, term: _Optional[int] = ..., index: _Optional[int] = ..., data: _Optional[bytes] = ...) -> None: ...
 
 class AppendEntriesReq(_message.Message):
-    __slots__ = ("term", "leader_id", "prev_log_index", "prev_log_term", "entries", "leader_commit")
+    __slots__ = ("term", "leader_id", "prev_log_index", "prev_log_term", "entries", "leader_commit", "leader_lease")
     TERM_FIELD_NUMBER: _ClassVar[int]
     LEADER_ID_FIELD_NUMBER: _ClassVar[int]
     PREV_LOG_INDEX_FIELD_NUMBER: _ClassVar[int]
     PREV_LOG_TERM_FIELD_NUMBER: _ClassVar[int]
     ENTRIES_FIELD_NUMBER: _ClassVar[int]
     LEADER_COMMIT_FIELD_NUMBER: _ClassVar[int]
+    LEADER_LEASE_FIELD_NUMBER: _ClassVar[int]
     term: int
     leader_id: int
     prev_log_index: int
     prev_log_term: int
     entries: _containers.RepeatedCompositeFieldContainer[LogEntry]
     leader_commit: int
-    def __init__(self, term: _Optional[int] = ..., leader_id: _Optional[int] = ..., prev_log_index: _Optional[int] = ..., prev_log_term: _Optional[int] = ..., entries: _Optional[_Iterable[_Union[LogEntry, _Mapping]]] = ..., leader_commit: _Optional[int] = ...) -> None: ...
+    leader_lease: int
+    def __init__(self, term: _Optional[int] = ..., leader_id: _Optional[int] = ..., prev_log_index: _Optional[int] = ..., prev_log_term: _Optional[int] = ..., entries: _Optional[_Iterable[_Union[LogEntry, _Mapping]]] = ..., leader_commit: _Optional[int] = ..., leader_lease: _Optional[int] = ...) -> None: ...
 
 class AppendEntriesResponse(_message.Message):
     __slots__ = ("term", "success", "last_log_index")
@@ -54,9 +56,17 @@ class RequestVoteReq(_message.Message):
     def __init__(self, term: _Optional[int] = ..., candidate_id: _Optional[int] = ..., last_log_index: _Optional[int] = ..., last_log_term: _Optional[int] = ...) -> None: ...
 
 class RequestVoteResponse(_message.Message):
-    __slots__ = ("term", "vote_granted")
+    __slots__ = ("term", "vote_granted", "leader_lease")
     TERM_FIELD_NUMBER: _ClassVar[int]
     VOTE_GRANTED_FIELD_NUMBER: _ClassVar[int]
+    LEADER_LEASE_FIELD_NUMBER: _ClassVar[int]
     term: int
     vote_granted: bool
-    def __init__(self, term: _Optional[int] = ..., vote_granted: bool = ...) -> None: ...
+    leader_lease: int
+    def __init__(self, term: _Optional[int] = ..., vote_granted: bool = ..., leader_lease: _Optional[int] = ...) -> None: ...
+
+class ClientResponse(_message.Message):
+    __slots__ = ("success",)
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    def __init__(self, success: bool = ...) -> None: ...

@@ -24,6 +24,11 @@ class RaftStub(object):
                 request_serializer=raft__pb2.RequestVoteReq.SerializeToString,
                 response_deserializer=raft__pb2.RequestVoteResponse.FromString,
                 )
+        self.Append = channel.unary_unary(
+                '/raft.Raft/Append',
+                request_serializer=raft__pb2.LogEntry.SerializeToString,
+                response_deserializer=raft__pb2.AppendEntriesResponse.FromString,
+                )
 
 
 class RaftServicer(object):
@@ -41,6 +46,12 @@ class RaftServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Append(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RaftServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -53,6 +64,11 @@ def add_RaftServicer_to_server(servicer, server):
                     servicer.RequestVote,
                     request_deserializer=raft__pb2.RequestVoteReq.FromString,
                     response_serializer=raft__pb2.RequestVoteResponse.SerializeToString,
+            ),
+            'Append': grpc.unary_unary_rpc_method_handler(
+                    servicer.Append,
+                    request_deserializer=raft__pb2.LogEntry.FromString,
+                    response_serializer=raft__pb2.AppendEntriesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -95,5 +111,22 @@ class Raft(object):
         return grpc.experimental.unary_unary(request, target, '/raft.Raft/RequestVote',
             raft__pb2.RequestVoteReq.SerializeToString,
             raft__pb2.RequestVoteResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def Append(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/raft.Raft/Append',
+            raft__pb2.LogEntry.SerializeToString,
+            raft__pb2.AppendEntriesResponse.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
