@@ -12,5 +12,5 @@ class countDownTimer :
             self.Timer -= 1
         return 0
     def UpdateTimeout(self):
-        self.Timer = random.randint(self.Timer, 15)
+        self.Timer = random.randint(max(self.Timer,5), 10)
 
