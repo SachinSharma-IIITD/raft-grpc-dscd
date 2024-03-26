@@ -9,7 +9,7 @@ import threading
 import os
 
 _MAX_ELECTION_TIMEOUT__ = 10
-_HEARTBEAT_TIMEOUT__ = 3
+_HEARTBEAT_TIMEOUT__ = 5
 _MAX_LEASE_TIMEOUT__ = 10
 _NUMBER_OF_NODES_IN_CONSENSUS__ = 3
 _IP_ADDRESS_LIST = ['127.0.0.1:8000', '127.0.0.1:8001', '127.0.0.1:8002']
@@ -89,6 +89,7 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
         # leader lease duration (to be propagated to the followers)
         self.leader_lease_time_acquired = 0
+        self.temp_leader_lease = False
 
         # before transitioning to leader, it need to wait till
         self.follower_end_leader_lease = CountDownTimer(
@@ -113,10 +114,15 @@ class Raft(raft_pb2_grpc.RaftServicer):
         # in request received request from a node with a term greater than the current term, then update the current term
         elif request.term > self.current_term:
             self.current_term = request.term
-            self.voted_for = -1
-            self.current_state = "follower"
-            self.election_timeout.restart_timer()
-            metadata_updated = True
+            if self.current_state == 'leader':
+                self.current_term = request.term
+                self.voted_for = -1
+                self.temp_leader_lease = True
+            else:
+                self.voted_for = -1
+                self.current_state = "follower"
+                self.election_timeout.restart_timer()
+                metadata_updated = True
             # this return need to be removed
             # print(f"{time.time()} vote granted")
             # return RequestVoteResponse(term=self.current_term, vote_granted=True)
@@ -135,7 +141,10 @@ class Raft(raft_pb2_grpc.RaftServicer):
                         f"{self.current_term} {self.commit_index} {self.voted_for}")
                     f.close()
 
-                return RequestVoteResponse(term=self.current_term, vote_granted=True, leader_lease=self.follower_end_leader_lease.Timer)
+                if self.current_state == 'leader':
+                    return RequestVoteResponse(term=self.current_term, vote_granted=True, leader_lease=self.leader_lease_timeout.Timer)
+                else:
+                    return RequestVoteResponse(term=self.current_term, vote_granted=True, leader_lease=self.follower_end_leader_lease.Timer)
 
         print(f"{time.time()} vote denied")
 
@@ -145,7 +154,10 @@ class Raft(raft_pb2_grpc.RaftServicer):
                     f"{self.current_term} {self.commit_index} {self.voted_for}")
                 f.close()
 
-        return RequestVoteResponse(term=self.current_term, vote_granted=False, leader_lease = self.follower_end_leader_lease.Timer)
+        if self.current_state == 'leader':
+            return RequestVoteResponse(term=self.current_term, vote_granted=False, leader_lease=self.leader_lease_timeout.Timer)
+        else:
+            return RequestVoteResponse(term=self.current_term, vote_granted=False, leader_lease=self.follower_end_leader_lease.Timer)
 
     def AppendEntries(self, request, context):
         print("---------------------------------")
@@ -156,6 +168,9 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
         if (request.term > self.current_term):
             # if the server is in the candidate state, it will revert back to follower state
+            if self.current_state == 'leader':
+                print(
+                    f'Append entries recv in leader state {self.leader_lease_timeout.Timer} lease left')
             self.current_state = "follower"
             self.current_term = request.term
             self.voted_for = -1
@@ -220,18 +235,21 @@ class Raft(raft_pb2_grpc.RaftServicer):
         print(f"{time.time()} Received Set Req for {request.key} {request.value}")
         print("---------------------------------")
 
-        if self.current_state != "leader":
+        if self.current_state != "leader" or self.temp_leader_lease:
             print(f"{time.time()} SET failed")
             return SetResponse(success=False, leader_id=self.current_leader)
 
         self.log.append(LogEntry(term=self.current_term, index=len(
             self.log), data=f'SET {request.key} {request.value}'))
-                
+
         with open(self.log_path, 'a') as f:
             f.write(f"SET {request.key} {request.value} {self.current_term}\n")
             f.close()
 
         while self.commit_index != self.log[-1].index:
+            if self.current_state != "leader":
+                print(f"{time.time()} SET failed")
+                return SetResponse(success=False, leader_id=self.current_leader)
             time.sleep(1)
 
         print(f"{time.time()} SET success")
@@ -303,13 +321,9 @@ class Raft(raft_pb2_grpc.RaftServicer):
             else:
                 if (term_ > self.current_term):
                     self.current_term = term_
+                    self.temp_leader_lease = True
+                    self.stop_heart_beat_thread = True
                     # as the term is updated and server has not voted in the updated term
-                    self.voted_for = -1
-                    self.current_state = "follower"
-                    with open(self.metadata_path, 'w') as f:
-                        f.write(
-                            f"{self.current_term} {self.commit_index} {self.voted_for}")
-                        f.close()
                     return
                 else:
                     self.next_index[i] -= 1
@@ -319,9 +333,12 @@ class Raft(raft_pb2_grpc.RaftServicer):
             # self.heart_beat_parallel(IP_ADDRESS)
             return
 
+# ############################################################################
+
     def send_heart_beats(self):
         if self.current_state != 'leader':
-            self.leader_lease_timeout.Timer = 0 
+            self.temp_leader_lease = False
+            self.leader_lease_timeout.Timer = 0
             self.stop_heart_beat_thread = True
             self.run_election_timer()
             return
@@ -330,6 +347,7 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
         # self.current_state = "leader"  # making current state as leader
         self.current_leader = __ID__  # making current leader as the node id
+        self.temp_leader_lease = False
 
         metadata_updated = False
 
@@ -337,21 +355,53 @@ class Raft(raft_pb2_grpc.RaftServicer):
         leader_lease_timeout_thread = threading.Thread(
             target=self.leader_lease_timeout.countDown, kwargs={'annotation': "leader lease timer"})
         leader_lease_timeout_thread.start()
-        print(f'Leader lease time acquired: {self.leader_lease_time_acquired}')
+        self.leader_lease_time_acquired = self.leader_lease_timeout.Timer
+        print(f'Leader lease time: {self.leader_lease_time_acquired}')
 
-        if self.current_state != 'leader':
-            self.leader_lease_timeout.Timer = 0 
+        # if self.current_state != 'leader':
+        #     self.leader_lease_timeout.Timer = 0
+        #     self.stop_heart_beat_thread = True
+        #     self.run_election_timer()
+        #     return
+
+        if self.temp_leader_lease:
+            self.leader_lease_timeout.countDown(
+                timeout=self.leader_lease_timeout.Timer, annotation='temp leader lease')
+            self.voted_for = -1
+            self.current_state = "follower"
+            with open(self.metadata_path, 'w') as f:
+                f.write(
+                    f"{self.current_term} {self.commit_index} {self.voted_for}")
+                f.close()
+            self.temp_leader_lease = False
+            self.leader_lease_timeout.Timer = 0
             self.stop_heart_beat_thread = True
             self.run_election_timer()
             return
 
         # print("timer : ",self.leader_lease_timeout.Timer)
-        self.leader_lease_time_acquired = self.leader_lease_timeout.Timer
         for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
             self.next_index.append(len(self.log))
             self.match_index.append(0)
 
+        old_lease_time_left = self.leader_lease_timeout.Timer
+
         while ((self.current_state == "leader") and (self.leader_lease_timeout.Timer) != 0):
+            if self.temp_leader_lease:
+                self.leader_lease_timeout.countDown(
+                    timeout=old_lease_time_left, annotation='temp leader lease')
+                self.voted_for = -1
+                self.current_state = "follower"
+                with open(self.metadata_path, 'w') as f:
+                    f.write(
+                        f"{self.current_term} {self.commit_index} {self.voted_for}")
+                    f.close()
+                self.temp_leader_lease = False
+                self.leader_lease_timeout.Timer = 0
+                self.stop_heart_beat_thread = True
+                self.run_election_timer()
+                return
+
             self.heartbeat_timer.countDown(annotation='Heartbeat timer')
             # leader send heartbeat messages to all the servers to establish authority after every 3 seconds
 
@@ -362,7 +412,22 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
             self.stop_heart_beat_thread = False
 
-            # send initial empty AppendEntries RPCs
+            if self.temp_leader_lease:
+                self.leader_lease_timeout.countDown(
+                    timeout=self.leader_lease_timeout.Timer, annotation='temp leader lease')
+                self.voted_for = -1
+                self.current_state = "follower"
+                with open(self.metadata_path, 'w') as f:
+                    f.write(
+                        f"{self.current_term} {self.commit_index} {self.voted_for}")
+                    f.close()
+                self.temp_leader_lease = False
+                self.leader_lease_timeout.Timer = 0
+                self.stop_heart_beat_thread = True
+                self.run_election_timer()
+                return
+
+                # send initial empty AppendEntries RPCs
             for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
                 if (i == __ID__):
                     continue
@@ -377,6 +442,22 @@ class Raft(raft_pb2_grpc.RaftServicer):
                 threads.append(t)
 
             time.sleep(1)  # sleep for 1 second before checking any response
+
+            if self.temp_leader_lease:
+                self.leader_lease_timeout.countDown(
+                    timeout=self.leader_lease_timeout.Timer, annotation='temp leader lease')
+                self.voted_for = -1
+                self.current_state = "follower"
+                with open(self.metadata_path, 'w') as f:
+                    f.write(
+                        f"{self.current_term} {self.commit_index} {self.voted_for}")
+                    f.close()
+                self.temp_leader_lease = False
+                self.leader_lease_timeout.Timer = 0
+                self.stop_heart_beat_thread = True
+                self.run_election_timer()
+                return
+
             if self.current_state != "leader":
                 break
 
@@ -393,8 +474,11 @@ class Raft(raft_pb2_grpc.RaftServicer):
                         self.db[entry[1]] = entry[2]
 
                 self.stop_heart_beat_thread = True
-                self.leader_lease_timeout.restart_timer()
                 print(f"{time.time()} majority heart beat received")
+
+                old_lease_time_left = self.leader_lease_timeout.Timer
+
+                self.leader_lease_timeout.restart_timer()
                 self.leader_lease_time_acquired = self.leader_lease_timeout.Timer
 
                 if metadata_updated:
@@ -405,7 +489,8 @@ class Raft(raft_pb2_grpc.RaftServicer):
             else:
                 continue
 
-        self.leader_lease_timeout.Timer = 0 
+        self.temp_leader_lease = False
+        self.leader_lease_timeout.Timer = 0
         self.stop_heart_beat_thread = True
         self.run_election_timer()
         return
@@ -446,6 +531,7 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
         # all the threads are active
         self.stop_thread = False
+        self.temp_leader_lease = False
 
         candidate_timeout = CountDownTimer(
             MAX_T=_MAX_ELECTION_TIMEOUT__, type='random')
@@ -511,8 +597,15 @@ class Raft(raft_pb2_grpc.RaftServicer):
                     print(
                         f"{time.time()} waiting for follower end leader lease {self.follower_end_leader_lease.Timer}")
             else:
-                CountDownTimer(MAX_T=self.leader_lease_time_acquired, type='fixed').countDown(annotation="leader lease time")
-            self.send_heart_beats()
+                CountDownTimer(MAX_T=self.leader_lease_time_acquired, type='fixed').countDown(
+                    annotation="leader lease time")
+            if not self.temp_leader_lease:
+                self.send_heart_beats()
+            else:
+                self.temp_leader_lease = False
+                self.leader_lease_timeout.Timer = 0
+                self.stop_heart_beat_thread = True
+                self.run_election_timer()
         else:
             print(f"{time.time()} Election lost {self.current_term}")
             self.run_election_timer()

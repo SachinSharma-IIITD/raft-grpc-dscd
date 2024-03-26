@@ -1,1 +1,2 @@
-SET a 5 8
+SET a 5 5
+SET b 6 71
