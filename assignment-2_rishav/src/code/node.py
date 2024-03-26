@@ -6,11 +6,12 @@ from threading import Timer
 from raft_pb2 import RequestVoteReq, RequestVoteResponse, AppendEntriesReq, AppendEntriesResponse, LogEntry, ClientResponse
 import raft_pb2_grpc
 import sys
-from timer import countDownTimer
+from timer import CountDownTimer
 import threading
 import random
 
 _MAX_ELECTION_TIMEOUT__ = 10
+_HEARTBEAT_TIMEOUT__ = 5
 _NUMBER_OF_NODES_IN_CONSENSUS__ = 3
 _IP_ADDRESS_LIST = ['127.0.0.1:8000', '127.0.0.1:8001', '127.0.0.1:8002']
 __ID__ = int(sys.argv[1])
@@ -32,8 +33,8 @@ class Raft(raft_pb2_grpc.RaftServicer):
         self.next_index = []
         self.match_index = []
 
-        self.election_timeout = countDownTimer()
-        self.append_entries_timeout = countDownTimer()
+        self.election_timeout = CountDownTimer(MAX_T=_MAX_ELECTION_TIMEOUT__, type='random')
+        self.heartbeat_timer = CountDownTimer(MAX_T=_HEARTBEAT_TIMEOUT__, type='fixed')
 
         # keep the status of the server (follower, candidate, leader)
         self.current_state = "follower"
@@ -64,41 +65,66 @@ class Raft(raft_pb2_grpc.RaftServicer):
         return RequestVoteResponse(term=self.current_term, vote_granted=False)
 
     def AppendEntries(self, request, context):
+        print("---------------------------------")
+        print(
+            f"Received append entries from {request.leader_id} {request.term} {request.prev_log_index}")
+        print("---------------------------------")
+        self.election_timeout.restart_timer()
 
         if (request.term > self.current_term):
             self.current_state = "follower"
             self.current_term = request.term
-
-        self.election_timeout.restart_timeout()
+            self.voted_for = None
 
         # this is not part of raft (for testing purpose only (over to sachin))
-        if (request.entries == []):
-            return AppendEntriesResponse(term=self.current_term, success=True)
+        # if (request.entries == []):
+        #     return AppendEntriesResponse(term=self.current_term, success=True)
 
         # if the term of the request is less than the current term, then reject the request
-        if request.term < self.current_term:
-            return AppendEntriesResponse(term=self.current_term, success=False)
-        else:
-            self.current_term = request.term
-            self.voted_for = None
-        if len(self.log) == 0 and request.prev_log_index >= 0:
-            return AppendEntriesResponse(term=self.current_term, success=False)
+        # if request.term < self.current_term:
+        #     return AppendEntriesResponse(term=self.current_term, success=False)
+        # else:
+        #     self.current_term = request.term
+        #     self.voted_for = None
 
-        if len(self.log) > 0 and len(self.log) < request.prev_log_index + 1 or self.log[request.prev_log_index].term != request.prev_log_term:
-            return AppendEntriesResponse(term=self.current_term, success=False)
-        else:
-            self.log = self.log[:request.prev_log_index + 1]
-        if (len(request.entries) > 0):
-            self.log.extend(request.entries)
+        if request.term == self.current_term:
+            print('Cur log len: ', len(self.log))
 
-        if request.leader_commit > self.commit_index:
-            self.commit_index = min(request.leader_commit, len(self.log) - 1)
-        return AppendEntriesResponse(term=self.current_term, success=True)
+            if (len(self.log) > request.prev_log_index):
+                if not len(self.log) or (request.prev_log_index == 0 or self.log[request.prev_log_index].term == request.prev_log_term):
+                    self.log = self.log[:request.prev_log_index]
+                    self.log.extend(request.entries)
+
+                    if request.leader_commit > self.commit_index:
+                        self.commit_index = min(
+                            request.leader_commit, len(self.log) - 1)
+
+                    print('Success')
+                    print(self.log)
+                    return AppendEntriesResponse(term=self.current_term, success=True)
+
+        return AppendEntriesResponse(term=self.current_term, success=False)
+        # if len(self.log) == 0 and request.prev_log_index >= 0:
+        #     return AppendEntriesResponse(term=self.current_term, success=False)
+
+        # if len(self.log) > 0 and len(self.log) < request.prev_log_index + 1 or self.log[request.prev_log_index].term != request.prev_log_term:
+        #     return AppendEntriesResponse(term=self.current_term, success=False)
+        # else:
+        #     self.log = self.log[:request.prev_log_index + 1]
+        # if (len(request.entries) > 0):
+        #     self.log.extend(request.entries)
+
+        # if request.leader_commit > self.commit_index:
+        #     self.commit_index = min(request.leader_commit, len(self.log) - 1)
+        # return AppendEntriesResponse(term=self.current_term, success=True)
 
     def Append(self, request, context):
         if self.current_state != "leader":
             return ClientResponse(success=False)
         self.log.append((request.data, self.current_term))
+
+        self.heartbeat_timer.restart_timer()
+        self.send_heart_beats(request.data)
 
         threads = []
         for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
@@ -132,36 +158,71 @@ class Raft(raft_pb2_grpc.RaftServicer):
         except Exception as e:
             self.send_vote_request(IP_ADDRESS)
 
-    def send_heart_beats(self):
-
-        heart_beat_timer = countDownTimer()
+    def become_leader(self):
         self.current_state = "leader"
         print("I am now a leader")
+        self.heartbeat_timer.restart_timer()
+
+        # self.__election_timer__.cancel()
+        # self.__heartbeat_timer__.cancel()
+        # self.__heartbeat_timer__ = Timer(_HEARTBEAT_TIMEOUT__, self.send_heart_beats)
+
+        for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
+            self.next_index.append(len(self.log))
+            self.match_index.append(0)
 
         while self.current_state == "leader":
-            heart_beat_timer.countDown(3)
-            # leader send heartbeat messages to all the servers to establish authority
+            # start sending periodic empty AppendEntries RPCs
+            self.heartbeat_timer.countDown()
+            self.send_heart_beats()
 
-            # send initial empty AppendEntries RPCs
-            for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
-                try:
-                    if (i == __ID__):
-                        continue
-                    # IP address of the node
-                    IP_ADDRESS = _IP_ADDRESS_LIST[i]
+            # rsp = self.receive_append_entries_response()
 
-                    channel = grpc.insecure_channel(IP_ADDRESS)
-                    stub = raft_pb2_grpc.RaftStub(channel)
-
-                    stub.AppendEntries(AppendEntriesReq(term=self.current_term, leader_id=__ID__, prev_log_index=(-1 if len(self.log) == 0 else len(
-                        self.log)-1), prev_log_term=(0 if len(self.log) == 0 else self.log[-1][1]), entries=[], leader_commit=self.commit_index))
-                    # start sending periodic empty AppendEntries RPCs
-                except Exception as e:
-                    print(
-                        f"Node {_IP_ADDRESS_LIST[i]} is busy or not available")
-                    print(e)
-                    continue
+            # if rsp != None and rsp.success == False:
+            #     # if AppendEntries fails because of log inconsistency, decrement nextIndex and retry
+            #     if rsp.term > self.current_term:
+            #         self.current_term = rsp.term
+            #         self.voted_for = None
+            #         self.run_election_timer()
+            #         return
+            #     self.next_index[rsp.server_id] -= 1
+            #     self.send_append_entries(rsp.server_id)
         self.run_election_timer()
+
+    # def receive_append_entries_response(self):
+    #     pass
+
+    def send_heart_beats(self):
+        print('Term: ', self.current_term)
+        # leader send heartbeat messages to all the servers to establish authority
+
+        # send initial empty AppendEntries RPCs
+        for i in range(_NUMBER_OF_NODES_IN_CONSENSUS__):
+            try:
+                if (i == __ID__):
+                    continue
+
+                append_entries_rpc = AppendEntriesReq(
+                    term=self.current_term,
+                    leader_id=__ID__,
+                    prev_log_index=self.next_index[i]-1,
+                    prev_log_term=self.log[self.next_index[i]-1].term if self.next_index[i] > 0 else 0,
+                    entries=self.log[self.next_index[i]:] if self.next_index[i] < len(self.log) else [],
+                    leader_commit=self.commit_index)
+                
+                # IP address of the node
+                IP_ADDRESS = _IP_ADDRESS_LIST[i]
+
+                channel = grpc.insecure_channel(IP_ADDRESS)
+                stub = raft_pb2_grpc.RaftStub(channel)
+
+                stub.AppendEntries(append_entries_rpc)
+                # start sending periodic empty AppendEntries RPCs
+            except Exception as e:
+                print(
+                    f"Node {_IP_ADDRESS_LIST[i]} is busy or not available")
+                # print(e)
+                continue
 
     def run_election_timer(self):
         print("Node is now a follower")
@@ -170,8 +231,7 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
         # If node receives no communication from the leader, then it becomes a candidate and start election
 
-        self.election_timeout.countDown(
-            random.randint(1, _MAX_ELECTION_TIMEOUT__))
+        self.election_timeout.countDown()
         # timeouts are initialized to random values to prevent simultaneous elections
 
         # election timeout is reached, start election
@@ -213,9 +273,9 @@ class Raft(raft_pb2_grpc.RaftServicer):
                 target=self.send_vote_request, args=(IP_ADDRESS,))
             t.start()
             threads.append(t)
-        candidate_timeout = countDownTimer()
+        candidate_timeout = CountDownTimer(MAX_T=_MAX_ELECTION_TIMEOUT__, type='fixed')
         candidate_timeout_thread = threading.Thread(
-            target=candidate_timeout.countDown, args=(random.randint(1, _MAX_ELECTION_TIMEOUT__),))
+            target=candidate_timeout.countDown,args=())
         # try:
         #     candidate_timeout_thread.start()
         # except Exception as e:
@@ -228,7 +288,7 @@ class Raft(raft_pb2_grpc.RaftServicer):
 
                 print(f"Election won {self.current_term}")
                 self.stop_thread = True
-                self.send_heart_beats()
+                self.become_leader()
                 break
             elif (any(t.is_alive() for t in threads) == False):
                 self.run_election_timer()
@@ -279,8 +339,8 @@ def serve():
 
     try:
         raft_node.run_election_timer()
-        if (raft_node.current_state == "leader"):
-            raft_node.send_heart_beats()
+        # if (raft_node.current_state == "leader"):
+        #     raft_node.become_leader()
         while True:
             time.sleep(86400)
 

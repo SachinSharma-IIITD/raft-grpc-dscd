@@ -1,0 +1,7 @@
+SET a 5 5
+SET a 5 5
+SET a 10 10
+SET b 5 13
+SET c 3 14
+SET c 7 16
+SET d 4 21

@@ -12,8 +12,8 @@ class LogEntry(_message.Message):
     DATA_FIELD_NUMBER: _ClassVar[int]
     term: int
     index: int
-    data: bytes
-    def __init__(self, term: _Optional[int] = ..., index: _Optional[int] = ..., data: _Optional[bytes] = ...) -> None: ...
+    data: str
+    def __init__(self, term: _Optional[int] = ..., index: _Optional[int] = ..., data: _Optional[str] = ...) -> None: ...
 
 class AppendEntriesReq(_message.Message):
     __slots__ = ("term", "leader_id", "prev_log_index", "prev_log_term", "entries", "leader_commit")

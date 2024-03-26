@@ -15,6 +15,7 @@ message AppendEntriesReq {
     int64 prev_log_term = 4;
     repeated LogEntry entries = 5;
     int64 leader_commit = 6;
+    int64 leader_lease = 7; // leader_lease
 }
 
 message AppendEntriesResponse {
@@ -33,6 +34,7 @@ message RequestVoteReq {
 message RequestVoteResponse {
     int64 term = 1;
     bool vote_granted = 2;
+    int64 leader_lease = 3;
 }
 
 message ClientResponse {
