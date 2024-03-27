@@ -19,6 +19,13 @@ def send_request(request_func):
                     return response.value if hasattr(response, 'value') else "Success"
                 else:
                     if 0 <= response.leader_id < len(Nodes):
+                        print(response.leader_id, current_leader_index)
+                        if response.leader_id == current_leader_index:
+                            print('Leader is the same. Retrying with next node...')
+                            current_leader_index = (current_leader_index + 1) % len(Nodes)
+                            attempts += 1
+                            continue
+
                         current_leader_index = response.leader_id
                         print(f"Updated leader to node at index {current_leader_index}. Retrying...")
                         attempts += 1
@@ -26,9 +33,10 @@ def send_request(request_func):
                     else:
                         print("Received invalid leader_id. Retrying with next node...")
         except grpc.RpcError as e:
-            print(f"Error contacting node {Nodes[current_leader_index]}: {e}")
-        current_leader_index = (current_leader_index + 1) % len(Nodes)
-        attempts += 1
+            current_leader_index = (current_leader_index + 1) % len(Nodes)
+            attempts += 1
+            # print(f"Error contacting node {Nodes[current_leader_index]}: {e}")
+            
 
     print("All nodes have been tried. Operation failed.")
     return "Operation failed."
