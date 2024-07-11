@@ -15,7 +15,6 @@ Install by running: `pip install grpcio grpcio-tools protobuf`
 1. `python node.py <node_id>` for each of the node {0, 1, 2}
 2. `python client.py`
 
-
 ## Misc
 ### Compile Protocol Buffer
 *Run in src directory*
